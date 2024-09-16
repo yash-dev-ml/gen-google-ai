@@ -62,15 +62,17 @@ def get_student_model():
 def generate_user_id():
     return str(uuid.uuid4())
 
-# Initialize user ID
+# Initialize user ID and model
 if 'user_id' not in st.session_state:
     st.session_state.user_id = generate_user_id()
 
-# Function to get the student model associated with the current user
+if 'student_models' not in st.session_state:
+    st.session_state.student_models = {}
+
 def get_user_model(user_id):
-    if user_id not in st.session_state:
-        st.session_state[user_id] = get_student_model()
-    return st.session_state[user_id]
+    if user_id not in st.session_state.student_models:
+        st.session_state.student_models[user_id] = get_student_model()
+    return st.session_state.student_models[user_id]
 
 def get_socratic_response(student_input, student_model):
     conversation = "\n".join([f"{entry['role']}: {entry['content']}" for entry in student_model.conversation_history])
@@ -240,7 +242,6 @@ def main():
                     st.stop()
             else:
                 st.write(f"Next, we'll explore the concept of {student_model.current_concept}.")
-
         else:
             st.info(f"{reasoning}")
 
