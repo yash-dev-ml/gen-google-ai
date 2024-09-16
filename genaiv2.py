@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 import os
 import json
 import random
-import uuid
+import uuid  # For generating unique user IDs
 import gtts
 from io import BytesIO
 import io
@@ -58,15 +58,12 @@ class StudentModel:
 def get_student_model():
     return StudentModel()
 
-# Function to create a unique user ID
 def generate_user_id():
     return str(uuid.uuid4())
 
-# Initialize user ID
 if 'user_id' not in st.session_state:
     st.session_state.user_id = generate_user_id()
 
-# Function to get the student model associated with the current user
 def get_user_model(user_id):
     if user_id not in st.session_state:
         st.session_state[user_id] = get_student_model()
@@ -211,84 +208,48 @@ def main():
 
     if student_input := st.chat_input("Your response"):
         st.session_state.messages.append({"role": "user", "content": student_input})
-        with st.chat_message("user"):
-            st.markdown(student_input)
 
+        # Generate Socratic response based on student input
         assistant_response = get_socratic_response(student_input, student_model)
         st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-        with st.chat_message("assistant"):
-            st.markdown(assistant_response)
-            audio_file = text_to_speech(assistant_response)
-            st.audio(audio_file, format='audio/mp3')
 
-            student_model.add_to_history("assistant", assistant_response)
-
-        # Assess the student's understanding
+        # Assess understanding based on the student's input and assistant's response
         understood, reasoning = assess_understanding(student_input, assistant_response, student_model)
-
         if understood:
-            st.success(f"Great job! You've understood the concept of {student_model.current_concept}.")
-            if student_model.current_concept is None:
-                # All concepts for the current algorithm understood
-                st.balloons()
-                st.success(f"🎉 You've mastered {student_model.current_algorithm.name}!")
-                next_algorithm = student_model.get_next_algorithm()
+            st.session_state.messages.append({"role": "assistant", "content": "Great! You've understood the concept. Let's move on to the next topic or try a test question."})
+            student_model.update_understanding(student_model.current_concept)
+            student_model.current_concept = next(iter(set(student_model.current_algorithm.concepts) - student_model.current_algorithm.understood_concepts), None)
 
+            if not student_model.current_concept:
+                next_algorithm = student_model.get_next_algorithm()
                 if next_algorithm:
                     student_model.set_current_algorithm(next_algorithm)
-                    st.session_state.messages.append({"role": "assistant", "content": f"Let's move on to {student_model.current_algorithm.name}."})
-                    st.success(f"Next, we'll dive into {student_model.current_algorithm.name}.")
+                    st.session_state.messages.append({"role": "assistant", "content": f"Awesome job! Now, let's start learning about {student_model.current_algorithm.name}."})
                 else:
-                    st.success("You've mastered all the algorithms! Feel free to review any if you'd like.")
-            else:
-                st.info(f"Now, let's tackle the next concept: {student_model.current_concept}.")
+                    st.session_state.messages.append({"role": "assistant", "content": "You've covered all the concepts! Would you like to take a test or review what we've learned?"})
         else:
-            st.info(f"It seems there's more to explore regarding {student_model.current_concept}. {reasoning}")
-
-        # Optionally generate a test question if the student has mastered the current algorithm
-        if student_model.current_concept is None:
-            test_question = generate_test_question(student_model.current_algorithm)
-            st.info(f"Here's a test question for {student_model.current_algorithm.name}:\n\n{test_question}")
-
-            test_answer = st.text_area("Your answer to the test question:")
-            if st.button("Submit answer"):
-                evaluation = evaluate_test_answer(test_question, test_answer, student_model.current_algorithm)
-                if evaluation["passed"]:
-                    st.success(f"✅ You passed! Score: {evaluation['score']}%")
-                    st.write(f"Feedback: {evaluation['feedback']}")
-                else:
-                    st.error(f"❌ You didn't pass. Score: {evaluation['score']}%")
-                    st.write(f"Feedback: {evaluation['feedback']}")
-
-    # Sidebar for code execution
-    st.sidebar.header("Code Execution")
-    code_input = st.sidebar.text_area("Enter your code here:", height=200)
-
-    # Capture output and errors
-    output_buffer = io.StringIO()
-    error_buffer = io.StringIO()
-
-    if st.sidebar.button("Run Code"):
-        output_buffer.truncate(0)
-        output_buffer.seek(0)
-        error_buffer.truncate(0)
-        error_buffer.seek(0)
+            st.session_state.messages.append({"role": "assistant", "content": f"I appreciate your effort. Let's revisit the concept of {student_model.current_concept}."})
         
-        try:
-            with contextlib.redirect_stdout(output_buffer), contextlib.redirect_stderr(error_buffer):
-                exec(code_input, globals())
-            exec_output = output_buffer.getvalue()
-            exec_error = error_buffer.getvalue()
-        except Exception as e:
-            exec_error = str(e)
-        
-        if exec_output:
-            st.sidebar.subheader("Output")
-            st.sidebar.code(exec_output, language='python')
-        
-        if exec_error:
-            st.sidebar.subheader("Error")
-            st.sidebar.code(exec_error, language='python')
+        # Provide a test question if all concepts are understood
+        if not student_model.current_concept:
+            question = generate_test_question(student_model.current_algorithm)
+            st.session_state.messages.append({"role": "assistant", "content": f"Here is a test question to review your understanding:\n\n{question}"})
+
+        # Evaluate student's test answer
+        if test_answer := st.text_input("Your answer to the test question"):
+            evaluation = evaluate_test_answer(question, test_answer, student_model.current_algorithm)
+            st.session_state.messages.append({"role": "assistant", "content": f"Evaluation:\n\nScore: {evaluation['score']}%\n\nFeedback: {evaluation['feedback']}"})
+            
+            if evaluation["passed"]:
+                st.session_state.messages.append({"role": "assistant", "content": "Well done! You've passed the test. Would you like to learn about another algorithm or review something else?"})
+            else:
+                st.session_state.messages.append({"role": "assistant", "content": "Let's go over the concepts again to help you improve."})
+
+        # Play audio for assistant's responses
+        for message in st.session_state.messages:
+            if message["role"] == "assistant":
+                audio_file = text_to_speech(message["content"])
+                st.audio(audio_file, format='audio/mp3')
 
 if __name__ == "__main__":
     main()
