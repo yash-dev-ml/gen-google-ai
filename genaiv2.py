@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 import os
 import json
 import random
-import uuid  # For generating unique user IDs
+import uuid
 import gtts
 from io import BytesIO
 import io
@@ -58,12 +58,15 @@ class StudentModel:
 def get_student_model():
     return StudentModel()
 
+# Function to create a unique user ID
 def generate_user_id():
     return str(uuid.uuid4())
 
+# Initialize user ID
 if 'user_id' not in st.session_state:
     st.session_state.user_id = generate_user_id()
 
+# Function to get the student model associated with the current user
 def get_user_model(user_id):
     if user_id not in st.session_state:
         st.session_state[user_id] = get_student_model()
@@ -208,48 +211,53 @@ def main():
 
     if student_input := st.chat_input("Your response"):
         st.session_state.messages.append({"role": "user", "content": student_input})
+        with st.chat_message("user"):
+            st.markdown(student_input)
 
-        # Generate Socratic response based on student input
         assistant_response = get_socratic_response(student_input, student_model)
         st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+        with st.chat_message("assistant"):
+            st.markdown(assistant_response)
+            audio_file = text_to_speech(assistant_response)
+            st.audio(audio_file, format='audio/mp3')
 
-        # Assess understanding based on the student's input and assistant's response
+            student_model.add_to_history("assistant", assistant_response)
+
+        # Assess the student's understanding
         understood, reasoning = assess_understanding(student_input, assistant_response, student_model)
+
         if understood:
-            st.session_state.messages.append({"role": "assistant", "content": "Great! You've understood the concept. Let's move on to the next topic or try a test question."})
-            student_model.update_understanding(student_model.current_concept)
-            student_model.current_concept = next(iter(set(student_model.current_algorithm.concepts) - student_model.current_algorithm.understood_concepts), None)
-
-            if not student_model.current_concept:
-                next_algorithm = student_model.get_next_algorithm()
-                if next_algorithm:
-                    student_model.set_current_algorithm(next_algorithm)
-                    st.session_state.messages.append({"role": "assistant", "content": f"Awesome job! Now, let's start learning about {student_model.current_algorithm.name}."})
+            st.success("Great job! You’ve understood the current concept.")
+            if student_model.current_concept is None:
+                st.write("You've mastered all the concepts for this algorithm. Let's move on to a new algorithm.")
+                new_algorithm = student_model.get_next_algorithm()
+                if new_algorithm:
+                    student_model.set_current_algorithm(new_algorithm)
+                    next_concept = student_model.current_concept
+                    st.write(f"Next, we'll explore {student_model.current_algorithm.name}. The first concept we'll cover is {next_concept}.")
                 else:
-                    st.session_state.messages.append({"role": "assistant", "content": "You've covered all the concepts! Would you like to take a test or review what we've learned?"})
-        else:
-            st.session_state.messages.append({"role": "assistant", "content": f"I appreciate your effort. Let's revisit the concept of {student_model.current_concept}."})
-        
-        # Provide a test question if all concepts are understood
-        if not student_model.current_concept:
-            question = generate_test_question(student_model.current_algorithm)
-            st.session_state.messages.append({"role": "assistant", "content": f"Here is a test question to review your understanding:\n\n{question}"})
-
-        # Evaluate student's test answer
-        if test_answer := st.text_input("Your answer to the test question"):
-            evaluation = evaluate_test_answer(question, test_answer, student_model.current_algorithm)
-            st.session_state.messages.append({"role": "assistant", "content": f"Evaluation:\n\nScore: {evaluation['score']}%\n\nFeedback: {evaluation['feedback']}"})
-            
-            if evaluation["passed"]:
-                st.session_state.messages.append({"role": "assistant", "content": "Well done! You've passed the test. Would you like to learn about another algorithm or review something else?"})
+                    st.write("Congratulations! You've covered all the algorithms. You're now proficient in sorting algorithms!")
+                    st.stop()
             else:
-                st.session_state.messages.append({"role": "assistant", "content": "Let's go over the concepts again to help you improve."})
+                st.write(f"Next, we'll explore the concept of {student_model.current_concept}.")
 
-        # Play audio for assistant's responses
-        for message in st.session_state.messages:
-            if message["role"] == "assistant":
-                audio_file = text_to_speech(message["content"])
-                st.audio(audio_file, format='audio/mp3')
+        else:
+            st.info(f"{reasoning}")
+
+            # Optionally, present a test question to further assess the understanding
+            if student_model.current_concept is None:
+                test_question = generate_test_question(student_model.current_algorithm)
+                st.write(f"Here’s a test question to help you demonstrate your understanding of {student_model.current_algorithm.name}:")
+                st.write(test_question)
+                student_answer = st.text_area("Your answer")
+                if st.button("Submit Answer"):
+                    evaluation = evaluate_test_answer(test_question, student_answer, student_model.current_algorithm)
+                    st.write(f"Evaluation: {evaluation['feedback']}")
+                    if evaluation['passed']:
+                        st.success("Well done! You've passed the test.")
+                        student_model.update_understanding(student_model.current_concept)
+                    else:
+                        st.error("It looks like there are some areas for improvement. Keep working on it!")
 
 if __name__ == "__main__":
     main()
