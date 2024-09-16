@@ -4,9 +4,11 @@ from dotenv import load_dotenv
 import os
 import json
 import random
+import uuid
 import gtts
 from io import BytesIO
-import uuid
+import io
+import contextlib
 
 # Load environment variables
 load_dotenv()
@@ -36,9 +38,8 @@ class StudentModel:
         self.conversation_history = []
 
     def set_current_algorithm(self, algorithm_name):
-        if algorithm_name in self.algorithms:
-            self.current_algorithm = self.algorithms[algorithm_name]
-            self.current_concept = next(iter(set(self.current_algorithm.concepts) - self.current_algorithm.understood_concepts), None)
+        self.current_algorithm = self.algorithms[algorithm_name]
+        self.current_concept = next(iter(set(self.current_algorithm.concepts) - self.current_algorithm.understood_concepts), None)
 
     def update_understanding(self, concept):
         self.current_algorithm.understood_concepts.add(concept)
@@ -53,20 +54,25 @@ class StudentModel:
         unlearned_algorithms = [alg for alg, obj in self.algorithms.items() if len(obj.understood_concepts) < len(obj.concepts)]
         return random.choice(unlearned_algorithms) if unlearned_algorithms else None
 
-def get_student_model(user_id):
-    if 'student_models' not in st.session_state:
-        st.session_state.student_models = {}
-    
-    if user_id not in st.session_state.student_models:
-        st.session_state.student_models[user_id] = StudentModel()
-    
-    return st.session_state.student_models[user_id]
+@st.cache_resource
+def get_student_model():
+    return StudentModel()
+
+# Function to create a unique user ID
+def generate_user_id():
+    return str(uuid.uuid4())
+
+# Initialize user ID
+if 'user_id' not in st.session_state:
+    st.session_state.user_id = generate_user_id()
+
+# Function to get the student model associated with the current user
+def get_user_model(user_id):
+    if user_id not in st.session_state:
+        st.session_state[user_id] = get_student_model()
+    return st.session_state[user_id]
 
 def get_socratic_response(student_input, student_model):
-    if student_model.current_algorithm is None:
-        st.error("No sorting algorithm is currently selected. Please restart the session.")
-        return "Please restart the session or select an algorithm."
-
     conversation = "\n".join([f"{entry['role']}: {entry['content']}" for entry in student_model.conversation_history])
 
     prompt = f"""
@@ -95,7 +101,7 @@ def get_socratic_response(student_input, student_model):
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        st.error("Oops! I'm having trouble generating a response. Let's try again.")
+        st.error("Oops! I'm having a bit of trouble thinking right now. Let's try a different approach!")
         return "I apologize for the confusion. Could you tell me what specific aspect of the algorithm you'd like to explore?"
 
 def assess_understanding(student_input, assistant_response, student_model):
@@ -177,71 +183,112 @@ def evaluate_test_answer(question, student_answer, algorithm):
         return {
             "passed": False,
             "score": 0,
-            "feedback": "I apologize, but I couldn't properly evaluate your answer. Let's review the key points of the algorithm together."
+            "feedback": "I apologize, but I couldn't properly evaluate your answer. Let's review the key concepts."
         }
 
 def text_to_speech(text):
-    tts = gtts.gTTS(text)
-    fp = BytesIO()
-    tts.write_to_fp(fp)
-    return fp
+    tts = gtts.gTTS(text, lang='en')
+    audio_file = BytesIO()
+    tts.write_to_fp(audio_file)
+    audio_file.seek(0)
+    return audio_file
 
 def main():
-    st.set_page_config(page_title="AI Sorting Algorithm Teacher", page_icon="🧠", layout="wide")
+    st.title("Sorting Algorithm Tutor")
     
-    # Generate a unique user ID for new users
-    if 'user_id' not in st.session_state:
-        st.session_state.user_id = str(uuid.uuid4())
-    
-    st.title("🤖 AI Sorting Algorithm Teacher")
-    st.sidebar.header("User Settings")
+    user_id = st.session_state.user_id
+    student_model = get_user_model(user_id)
 
-    # Display the unique user ID
-    st.sidebar.text(f"Your User ID: {st.session_state.user_id}")
-
-    # Initialize or retrieve student model based on user ID
-    student_model = get_student_model(st.session_state.user_id)
-
-    # Start a new conversation if not already started
     if 'messages' not in st.session_state:
         st.session_state.messages = []
-        selected_algorithm = random.choice(list(student_model.algorithms.keys()))
-        student_model.set_current_algorithm(selected_algorithm)
+        student_model.set_current_algorithm(random.choice(list(student_model.algorithms.keys())))
         initial_message = f"Hello! 👋 I'm excited to help you learn about sorting algorithms. Let's start with {student_model.current_algorithm.name}. What do you know about this sorting algorithm?"
         st.session_state.messages.append({"role": "assistant", "content": initial_message})
 
-    # Display conversation history
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    student_input = st.chat_input("Your response...")
-    
-    if student_input:
-        student_model.add_to_history("user", student_input)
+    if student_input := st.chat_input("Your response"):
+        st.session_state.messages.append({"role": "user", "content": student_input})
+        with st.chat_message("user"):
+            st.markdown(student_input)
 
-        response = get_socratic_response(student_input, student_model)
-
-        st.session_state.messages.append({"role": "assistant", "content": response})
-
+        assistant_response = get_socratic_response(student_input, student_model)
+        st.session_state.messages.append({"role": "assistant", "content": assistant_response})
         with st.chat_message("assistant"):
-            st.markdown(response)
-            st.audio(text_to_speech(response), format="audio/mp3")
+            st.markdown(assistant_response)
+            audio_file = text_to_speech(assistant_response)
+            st.audio(audio_file, format='audio/mp3')
 
-        understood, reasoning = assess_understanding(student_input, response, student_model)
+            student_model.add_to_history("assistant", assistant_response)
+
+        # Assess the student's understanding
+        understood, reasoning = assess_understanding(student_input, assistant_response, student_model)
+
         if understood:
-            st.success(f"Great! You seem to have understood the concept of {student_model.current_concept}. {reasoning}")
-
+            st.success(f"Great job! You've understood the concept of {student_model.current_concept}.")
             if student_model.current_concept is None:
+                # All concepts for the current algorithm understood
+                st.balloons()
+                st.success(f"🎉 You've mastered {student_model.current_algorithm.name}!")
                 next_algorithm = student_model.get_next_algorithm()
+
                 if next_algorithm:
                     student_model.set_current_algorithm(next_algorithm)
-                    st.session_state.messages.append({"role": "assistant", "content": f"Now, let's move on to {next_algorithm}."})
+                    st.session_state.messages.append({"role": "assistant", "content": f"Let's move on to {student_model.current_algorithm.name}."})
+                    st.success(f"Next, we'll dive into {student_model.current_algorithm.name}.")
                 else:
-                    st.balloons()
-                    st.success("🎉 Congratulations! You've mastered all sorting algorithms!")
+                    st.success("You've mastered all the algorithms! Feel free to review any if you'd like.")
+            else:
+                st.info(f"Now, let's tackle the next concept: {student_model.current_concept}.")
         else:
-            st.info(f"Let's work a bit more on this concept. {reasoning}")
+            st.info(f"It seems there's more to explore regarding {student_model.current_concept}. {reasoning}")
+
+        # Optionally generate a test question if the student has mastered the current algorithm
+        if student_model.current_concept is None:
+            test_question = generate_test_question(student_model.current_algorithm)
+            st.info(f"Here's a test question for {student_model.current_algorithm.name}:\n\n{test_question}")
+
+            test_answer = st.text_area("Your answer to the test question:")
+            if st.button("Submit answer"):
+                evaluation = evaluate_test_answer(test_question, test_answer, student_model.current_algorithm)
+                if evaluation["passed"]:
+                    st.success(f"✅ You passed! Score: {evaluation['score']}%")
+                    st.write(f"Feedback: {evaluation['feedback']}")
+                else:
+                    st.error(f"❌ You didn't pass. Score: {evaluation['score']}%")
+                    st.write(f"Feedback: {evaluation['feedback']}")
+
+    # Sidebar for code execution
+    st.sidebar.header("Code Execution")
+    code_input = st.sidebar.text_area("Enter your code here:", height=200)
+
+    # Capture output and errors
+    output_buffer = io.StringIO()
+    error_buffer = io.StringIO()
+
+    if st.sidebar.button("Run Code"):
+        output_buffer.truncate(0)
+        output_buffer.seek(0)
+        error_buffer.truncate(0)
+        error_buffer.seek(0)
+        
+        try:
+            with contextlib.redirect_stdout(output_buffer), contextlib.redirect_stderr(error_buffer):
+                exec(code_input, globals())
+            exec_output = output_buffer.getvalue()
+            exec_error = error_buffer.getvalue()
+        except Exception as e:
+            exec_error = str(e)
+        
+        if exec_output:
+            st.sidebar.subheader("Output")
+            st.sidebar.code(exec_output, language='python')
+        
+        if exec_error:
+            st.sidebar.subheader("Error")
+            st.sidebar.code(exec_error, language='python')
 
 if __name__ == "__main__":
     main()
