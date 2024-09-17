@@ -4,11 +4,10 @@ from dotenv import load_dotenv
 import os
 import json
 import random
-import uuid
 import gtts
 from io import BytesIO
-import io
-import contextlib
+import sys
+from io import StringIO
 
 # Load environment variables
 load_dotenv()
@@ -25,7 +24,7 @@ class SortingAlgorithm:
         self.concepts = concepts
         self.understood_concepts = set()
 
-class StudentModel:
+class UserModel:
     def __init__(self):
         self.algorithms = {
             "bubble_sort": SortingAlgorithm("Bubble Sort", ["basic concept", "implementation", "time complexity", "space complexity", "best/worst cases"]),
@@ -36,6 +35,7 @@ class StudentModel:
         self.current_algorithm = None
         self.current_concept = None
         self.conversation_history = []
+        self.code_implementations = {}
 
     def set_current_algorithm(self, algorithm_name):
         self.current_algorithm = self.algorithms[algorithm_name]
@@ -54,35 +54,22 @@ class StudentModel:
         unlearned_algorithms = [alg for alg, obj in self.algorithms.items() if len(obj.understood_concepts) < len(obj.concepts)]
         return random.choice(unlearned_algorithms) if unlearned_algorithms else None
 
+    def add_code_implementation(self, algorithm_name, code):
+        self.code_implementations[algorithm_name] = code
+
 @st.cache_resource
-def get_student_model():
-    return StudentModel()
+def get_user_models():
+    return {}
 
-# Function to create a unique user ID
-def generate_user_id():
-    return str(uuid.uuid4())
-
-# Initialize user ID and model
-if 'user_id' not in st.session_state:
-    st.session_state.user_id = generate_user_id()
-
-if 'student_models' not in st.session_state:
-    st.session_state.student_models = {}
-
-def get_user_model(user_id):
-    if user_id not in st.session_state.student_models:
-        st.session_state.student_models[user_id] = get_student_model()
-    return st.session_state.student_models[user_id]
-
-def get_socratic_response(student_input, student_model):
-    conversation = "\n".join([f"{entry['role']}: {entry['content']}" for entry in student_model.conversation_history])
+def get_socratic_response(student_input, user_model):
+    conversation = "\n".join([f"{entry['role']}: {entry['content']}" for entry in user_model.conversation_history])
 
     prompt = f"""
-    You are an AI teaching assistant specializing in sorting algorithms. Your goal is to guide the student to understand and master sorting algorithms through Socratic questioning and clear explanations when necessary.
+    You are an AI teaching assistant specializing in sorting algorithms. Your goal is to guide the student to understand and master sorting algorithms through Socratic questioning, clear explanations, and practical Python implementations when necessary.
 
-    Current algorithm: {student_model.current_algorithm.name}
-    Current concept: {student_model.current_concept}
-    Understood concepts: {', '.join(student_model.current_algorithm.understood_concepts)}
+    Current algorithm: {user_model.current_algorithm.name}
+    Current concept: {user_model.current_concept}
+    Understood concepts: {', '.join(user_model.current_algorithm.understood_concepts)}
 
     Recent conversation:
     {conversation}
@@ -95,8 +82,9 @@ def get_socratic_response(student_input, student_model):
     3. If the student seems confused, break down the concept and ask simpler questions to build understanding.
     4. Regularly check for understanding and provide encouragement.
     5. If all concepts for the current algorithm are understood, prepare a short test question to confirm mastery.
+    6. When appropriate, provide a Python code snippet demonstrating the concept or algorithm implementation.
 
-    Respond in the voice of a supportive teacher, providing guidance and asking questions to promote critical thinking.
+    Respond in the voice of a supportive teacher, providing guidance and asking questions to promote critical thinking and practical implementation.
     """
 
     try:
@@ -106,9 +94,9 @@ def get_socratic_response(student_input, student_model):
         st.error("Oops! I'm having a bit of trouble thinking right now. Let's try a different approach!")
         return "I apologize for the confusion. Could you tell me what specific aspect of the algorithm you'd like to explore?"
 
-def assess_understanding(student_input, assistant_response, student_model):
+def assess_understanding(student_input, assistant_response, user_model):
     prompt = f"""
-    Analyze the following student response and determine if it demonstrates understanding of the current concept ({student_model.current_concept}) for the algorithm ({student_model.current_algorithm.name}).
+    Analyze the following student response and determine if it demonstrates understanding of the current concept ({user_model.current_concept}) for the algorithm ({user_model.current_algorithm.name}).
 
     Student response: {student_input}
     Assistant's last question/guidance: {assistant_response}
@@ -126,7 +114,7 @@ def assess_understanding(student_input, assistant_response, student_model):
         assessment = json.loads(response.text)
         
         if assessment["understood"] and assessment["confidence"] > 0.8:
-            student_model.update_understanding(student_model.current_concept)
+            user_model.update_understanding(user_model.current_concept)
         
         return assessment["understood"], assessment.get("reasoning", "")
     except json.JSONDecodeError:
@@ -185,26 +173,44 @@ def evaluate_test_answer(question, student_answer, algorithm):
         return {
             "passed": False,
             "score": 0,
-            "feedback": "I apologize, but I couldn't properly evaluate your answer. Let's review the key concepts."
+            "feedback": "I apologize, but I couldn't properly evaluate your answer. Let's review the key points of the algorithm together."
         }
 
 def text_to_speech(text):
-    tts = gtts.gTTS(text, lang='en')
-    audio_file = BytesIO()
-    tts.write_to_fp(audio_file)
-    audio_file.seek(0)
-    return audio_file
+    tts = gtts.gTTS(text)
+    fp = BytesIO()
+    tts.write_to_fp(fp)
+    return fp
+
+def execute_code(code):
+    old_stdout = sys.stdout
+    redirected_output = sys.stdout = StringIO()
+    try:
+        exec(code)
+        sys.stdout = old_stdout
+        return redirected_output.getvalue()
+    except Exception as e:
+        sys.stdout = old_stdout
+        return f"Error: {str(e)}"
 
 def main():
-    st.title("Sorting Algorithm Tutor")
+    st.set_page_config(page_title="AI Sorting Algorithm Teacher", page_icon="🧠", layout="wide")
+    st.title("🤖 AI Sorting Algorithm Teacher")
+
+    user_models = get_user_models()
+    user_id = st.session_state.get("user_id", None)
     
-    user_id = st.session_state.user_id
-    student_model = get_user_model(user_id)
+    if user_id is None or user_id not in user_models:
+        user_id = str(random.randint(1000, 9999))
+        st.session_state.user_id = user_id
+        user_models[user_id] = UserModel()
+
+    user_model = user_models[user_id]
 
     if 'messages' not in st.session_state:
         st.session_state.messages = []
-        student_model.set_current_algorithm(random.choice(list(student_model.algorithms.keys())))
-        initial_message = f"Hello! 👋 I'm excited to help you learn about sorting algorithms. Let's start with {student_model.current_algorithm.name}. What do you know about this sorting algorithm?"
+        user_model.set_current_algorithm(random.choice(list(user_model.algorithms.keys())))
+        initial_message = f"Hello! 👋 I'm excited to help you learn about sorting algorithms. Let's start with {user_model.current_algorithm.name}. What do you know about this sorting algorithm?"
         st.session_state.messages.append({"role": "assistant", "content": initial_message})
 
     for message in st.session_state.messages:
@@ -216,49 +222,55 @@ def main():
         with st.chat_message("user"):
             st.markdown(student_input)
 
-        assistant_response = get_socratic_response(student_input, student_model)
+        assistant_response = get_socratic_response(student_input, user_model)
         st.session_state.messages.append({"role": "assistant", "content": assistant_response})
         with st.chat_message("assistant"):
             st.markdown(assistant_response)
             audio_file = text_to_speech(assistant_response)
             st.audio(audio_file, format='audio/mp3')
 
-            student_model.add_to_history("assistant", assistant_response)
+        user_model.add_to_history("Student", student_input)
+        user_model.add_to_history("Assistant", assistant_response)
 
-        # Assess the student's understanding
-        understood, reasoning = assess_understanding(student_input, assistant_response, student_model)
-
+        understood, reasoning = assess_understanding(student_input, assistant_response, user_model)
         if understood:
-            st.success("Great job! You’ve understood the current concept.")
-            if student_model.current_concept is None:
-                st.write("You've mastered all the concepts for this algorithm. Let's move on to a new algorithm.")
-                new_algorithm = student_model.get_next_algorithm()
-                if new_algorithm:
-                    student_model.set_current_algorithm(new_algorithm)
-                    next_concept = student_model.current_concept
-                    st.write(f"Next, we'll explore {student_model.current_algorithm.name}. The first concept we'll cover is {next_concept}.")
-                else:
-                    st.write("Congratulations! You've covered all the algorithms. You're now proficient in sorting algorithms!")
-                    st.stop()
-            else:
-                st.write(f"Next, we'll explore the concept of {student_model.current_concept}.")
+            st.success(f"Great job! You seem to understand the concept of {user_model.current_concept}.")
+            if not user_model.current_concept:
+                test_question = generate_test_question(user_model.current_algorithm)
+                st.session_state.messages.append({"role": "assistant", "content": f"Fantastic progress! 🎉 Let's test your understanding of {user_model.current_algorithm.name}:\n\n{test_question}"})
+                with st.chat_message("assistant"):
+                    st.markdown(f"Fantastic progress! 🎉 Let's test your understanding of {user_model.current_algorithm.name}:\n\n{test_question}")
+                    audio_file = text_to_speech(f"Fantastic progress! Let's test your understanding of {user_model.current_algorithm.name}. {test_question}")
+                    st.audio(audio_file, format='audio/mp3')
         else:
-            st.info(f"{reasoning}")
+            st.info(f"Let's explore {user_model.current_concept} a bit more. {reasoning}")
 
-            # Optionally, present a test question to further assess the understanding
-            if student_model.current_concept is None:
-                test_question = generate_test_question(student_model.current_algorithm)
-                st.write(f"Here’s a test question to help you demonstrate your understanding of {student_model.current_algorithm.name}:")
-                st.write(test_question)
-                student_answer = st.text_area("Your answer")
-                if st.button("Submit Answer"):
-                    evaluation = evaluate_test_answer(test_question, student_answer, student_model.current_algorithm)
-                    st.write(f"Evaluation: {evaluation['feedback']}")
-                    if evaluation['passed']:
-                        st.success("Well done! You've passed the test.")
-                        student_model.update_understanding(student_model.current_concept)
-                    else:
-                        st.error("It looks like there are some areas for improvement. Keep working on it!")
+    st.sidebar.title("🚀 Learning Progress")
+    for alg_name, algorithm in user_model.algorithms.items():
+        progress = len(algorithm.understood_concepts) / len(algorithm.concepts)
+        st.sidebar.progress(progress, text=f"{alg_name}: {progress:.0%}")
+
+    st.sidebar.title("💻 Code Implementation")
+    selected_algorithm = st.sidebar.selectbox("Select an algorithm to implement:", list(user_model.algorithms.keys()))
+    
+    code = st.sidebar.text_area("Enter your Python code here:", value=user_model.code_implementations.get(selected_algorithm, ""), height=300)
+    if st.sidebar.button("Run Code"):
+        output = execute_code(code)
+        st.sidebar.code(output)
+        user_model.add_code_implementation(selected_algorithm, code)
+
+    st.sidebar.title("📚 Study Resources")
+    if st.sidebar.button("View Sorting Algorithm Cheat Sheet"):
+        st.sidebar.markdown("""
+        ### Sorting Algorithm Cheat Sheet
+        - **Bubble Sort**: O(n^2), in-place, stable
+        - **Insertion Sort**: O(n^2), in-place, stable
+        - **Merge Sort**: O(n log n), not in-place, stable
+        - **Quick Sort**: O(n log n) average, O(n^2) worst, in-place, not stable
+        """)
+
+    if st.sidebar.button("Show Algorithm Visualization"):
+        st.sidebar.video("https://www.youtube.com/watch?v=kPRA0W1kECg")
 
 if __name__ == "__main__":
     main()
